@@ -1,57 +1,91 @@
-# Vue Dashboard Template
+# KACO Blueplanet Inverter Dashboard
 
-[![Nuxt UI](https://img.shields.io/badge/Made%20with-Nuxt%20UI-00DC82?logo=nuxt&labelColor=020420)](https://ui.nuxt.com)
+This project is a Vue 3 dashboard for monitoring a KACO Blueplanet inverter from a local endpoint. It polls inverter telemetry, shows the current operating state, and visualizes recent values over time so the system can be checked quickly from a browser.
 
-Get started with the Vite + Vue dashboard template with multiple pages, collapsible sidebar, keyboard shortcuts, light & dark mode, command palette and more, powered by [Nuxt UI](https://ui.nuxt.com).
+## What the app does
 
-- [Live demo](https://dashboard-vue-template.nuxt.dev)
-- [Documentation](https://ui.nuxt.com/docs/getting-started/installation/vue)
+- Displays live inverter metrics such as current AC power, temperature, frequency, total and daily energy, operating hours, warnings, and errors.
+- Shows phase voltages and currents plus PV input voltages and currents in a compact overview.
+- Polls a local inverter endpoint every 10 seconds.
+- Stores recent samples in IndexedDB and renders a small trend chart for the selected metric.
+- Falls back to built-in sample data when the device cannot be reached or when discovery fails.
 
-<a href="https://dashboard-vue-template.nuxt.dev/" target="_blank">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://ui.nuxt.com/assets/templates/vue/dashboard-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://ui.nuxt.com/assets/templates/vue/dashboard-light.png">
-    <img alt="Vue Dashboard Template" src="https://ui.nuxt.com/assets/templates/vue/dashboard-light.png">
-  </picture>
-</a>
+## Inverter data from the endpoint
 
-> The dashboard template for Nuxt is on https://github.com/nuxt-ui-templates/dashboard.
+The dashboard expects a payload from the local endpoint at `/api/inverter` with this shape:
 
-## Quick Start
-
-```bash [Terminal]
-npm create nuxt@latest -- --no-modules -t ui-vue/dashboard
+```json
+{
+  "data": {
+    "flg": 1,
+    "tim": "20260712193846",
+    "tmp": 430,
+    "fac": 4999,
+    "pac": 0,
+    "sac": 0,
+    "qac": 0,
+    "eto": 176403,
+    "etd": 200,
+    "hto": 11819,
+    "pf": 0,
+    "wan": 0,
+    "err": 0,
+    "vac": [2380, 2362, 2364],
+    "iac": [5, 5, 5],
+    "vpv": [1503, 1497],
+    "ipv": [0, 0],
+    "str": []
+  },
+  "source": "live",
+  "host": "192.168.0.42",
+  "status": "online"
+}
 ```
 
-## Deploy your own
+The app interprets the values as follows:
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-name=dashboard-vue&repository-url=https%3A%2F%2Fgithub.com%2Fnuxt-ui-templates%2Fdashboard-vue&demo-image=https%3A%2F%2Fui.nuxt.com%2Fassets%2Ftemplates%2Fvue%2Fdashboard-dark.png&demo-url=https%3A%2F%2Fdashboard-vue-template.nuxt.dev%2F&demo-title=Vue%20Dashboard%20Template&demo-description=A%20dashboard%20template%20with%20multi-column%20layout%20for%20building%20sophisticated%20admin%20interfaces.)
+- `tim` is parsed as a timestamp in `YYYYMMDDHHMMSS` format and formatted for display.
+- `tmp` is divided by 10 to show temperature in °C.
+- `fac` is divided by 100 to show frequency in Hz.
+- `vac` and `iac` are converted to phase voltage/current values.
+- `vpv` and `ipv` are converted to PV input voltage/current values.
+- `pac`, `sac`, and `qac` are treated as raw power values and displayed in watts, VA, and var.
 
-## Setup
+## Device discovery and fallback handling
 
-Make sure to install the dependencies:
+Before showing live data, the app enters a discovery state and tries to reach the inverter endpoint. The UI reports whether the device is currently discovering, online, offline, or running on fallback sample data.
+
+If the endpoint responds with a fallback payload, the dashboard:
+
+- switches to a warning or fallback state,
+- shows the reason for the fallback in the status banner, and
+- continues rendering the interface with built-in demo values so the layout still works.
+
+## History and charting
+
+Each successful poll creates a history point and stores it in IndexedDB. The app keeps the last 60 samples and renders a compact line chart for the currently selected metric, such as power, temperature, frequency, energy, or PV values. This gives a quick view of how the inverter has behaved over time.
+
+## Development
+
+Install dependencies:
 
 ```bash
 pnpm install
 ```
 
-## Development Server
-
-Start the development server on `http://localhost:5173`:
+Start the development server:
 
 ```bash
 pnpm dev
 ```
 
-## Production
-
-Build the application for production:
+Build for production:
 
 ```bash
 pnpm build
 ```
 
-Locally preview production build:
+Preview the production build locally:
 
 ```bash
 pnpm preview
