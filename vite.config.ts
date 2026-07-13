@@ -99,11 +99,22 @@ async function tryDiscoverFromCandidates() {
       cachedHost = host
       cachedSerialNumber = serialNumber
 
+      let meterData = null
+      try {
+        const meterResponse = await requestHost(host, '/getdevdata.cgi?device=3')
+        if (meterResponse.ok && meterResponse.body) {
+          meterData = JSON.parse(meterResponse.body)
+        }
+      } catch {
+        meterData = null
+      }
+
       return {
         data: parsedData,
         source: 'live' as const,
         host,
-        status: 'online' as const
+        status: 'online' as const,
+        meterData
       }
     } catch {
       continue
@@ -111,6 +122,26 @@ async function tryDiscoverFromCandidates() {
   }
 
   return null
+}
+
+async function discoverMeterData() {
+  const discovered = await tryDiscoverFromCandidates()
+
+  if (discovered?.meterData) {
+    return discovered.meterData
+  }
+
+  return {
+    flg: 0,
+    tim: '',
+    pac: 0,
+    itd: 0,
+    otd: 0,
+    iet: 0,
+    oet: 0,
+    mod: 0,
+    enb: 0
+  }
 }
 
 async function discoverInverterData() {
@@ -193,6 +224,12 @@ export default defineConfig({
       configureServer(server) {
         server.middlewares.use('/api/inverter', async (_req, res) => {
           const payload = await discoverInverterData()
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(payload))
+        })
+
+        server.middlewares.use('/api/meter', async (_req, res) => {
+          const payload = await discoverMeterData()
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify(payload))
         })

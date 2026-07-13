@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useDashboard } from '../composables/useDashboard'
+import { useMeterData } from '../composables/useMeterData'
 
 interface InverterData {
   flg: number
@@ -48,6 +49,7 @@ interface DiscoveryResponse {
 }
 
 const { isNotificationsSlideoverOpen } = useDashboard()
+const { meterData, loading: meterLoading, error: meterError, refresh: refreshMeterData } = useMeterData()
 
 const endpoint = '/api/inverter'
 const fallbackData: InverterData = {
@@ -109,6 +111,7 @@ const chartParameterOptions = [{
 
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 let dbPromise: Promise<IDBDatabase> | null = null
+let refreshPromise: Promise<void> | null = null
 
 const statusLabel = computed(() => {
   switch (deviceStatus.value) {
@@ -172,6 +175,52 @@ const reactivePowerLabel = computed(() => `${(inverterData.value?.qac ?? 0).toLo
 const operatingHoursLabel = computed(() => `${inverterData.value?.hto ?? 0} h`)
 const warningsLabel = computed(() => `${inverterData.value?.wan ?? 0} Warnungen`)
 const errorsLabel = computed(() => `${inverterData.value?.err ?? 0} Fehler`)
+
+const meterPowerValue = computed(() => meterData.value?.pac ?? 0)
+const meterPowerLabel = computed(() => `${meterPowerValue.value.toLocaleString('de-DE')} W`)
+const meterDirection = computed(() => {
+  const value = meterPowerValue.value
+  if (value < 0) {
+    return 'import'
+  }
+
+  if (value > 0) {
+    return 'export'
+  }
+
+  return 'neutral'
+})
+
+const meterDirectionLabel = computed(() => {
+  switch (meterDirection.value) {
+    case 'import':
+      return 'Netzbezug'
+    case 'export':
+      return 'Einspeisung'
+    default:
+      return 'Neutral'
+  }
+})
+
+const meterDirectionColor = computed(() => {
+  switch (meterDirection.value) {
+    case 'import':
+      return 'error'
+    case 'export':
+      return 'success'
+    default:
+      return 'neutral'
+  }
+})
+
+const meterImportTodayLabel = computed(() => `${formatEnergyValue(meterData.value?.itd ?? 0)} kWh`)
+const meterExportTodayLabel = computed(() => `${formatEnergyValue(meterData.value?.otd ?? 0)} kWh`)
+const meterImportTotalLabel = computed(() => `${formatEnergyValue(meterData.value?.iet ?? 0)} kWh`)
+const meterExportTotalLabel = computed(() => `${formatEnergyValue(meterData.value?.oet ?? 0)} kWh`)
+
+function formatEnergyValue(value: number) {
+  return (value / 1000).toFixed(2)
+}
 
 const summaryItems = computed(() => [{
   label: 'Leistung',
@@ -260,6 +309,10 @@ const sunMode = computed(() => {
     return 'medium'
   }
 
+  if (power < 1000) {
+    return 'high'
+  }
+
   return 'full'
 })
 const selectedParameterLabel = computed(() => chartParameterOptions.find((option) => option.value === selectedChartParameter.value)?.label ?? 'Leistung AC')
@@ -303,6 +356,8 @@ const chartXScaleLabels = computed(() => {
 
   const points = history.value
   const count = Math.min(4, points.length)
+  const left = 16
+  const right = 116
 
   return Array.from({ length: count }, (_, index) => {
     const targetIndex = count === 1
@@ -317,7 +372,30 @@ const chartXScaleLabels = computed(() => {
         hour: '2-digit',
         minute: '2-digit'
       }),
-      x: count === 1 ? 50 : (index / (count - 1)) * 100
+      x: count === 1 ? 66 : left + (index / (count - 1)) * (right - left)
+    }
+  })
+})
+
+const chartYTicks = computed(() => {
+  if (!history.value.length) {
+    return []
+  }
+
+  const values = history.value.map((item) => getMetricValue(item, selectedChartParameter.value))
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const range = max - min || 1
+  const tickCount = 5
+
+  return Array.from({ length: tickCount }, (_, index) => {
+    const ratio = index / (tickCount - 1)
+    const value = max - range * ratio
+    const y = 10 + (1 - ratio) * 80
+
+    return {
+      label: formatAxisValue(value, selectedChartParameter.value),
+      y
     }
   })
 })
@@ -331,10 +409,12 @@ const chartPath = computed(() => {
   const min = Math.min(...values)
   const max = Math.max(...values)
   const range = max - min || 1
+  const left = 16
+  const right = 116
 
   return values.map((value, index) => {
-    const x = history.value.length === 1 ? 50 : (index / (values.length - 1)) * 100
-    const y = 100 - ((value - min) / range) * 80 - 10
+    const x = history.value.length === 1 ? 66 : left + (index / (values.length - 1)) * (right - left)
+    const y = 90 - ((value - min) / range) * 80
     return `${index === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`
   }).join(' ')
 })
@@ -458,46 +538,83 @@ function formatMetricValue(item: HistoryPoint, metric: string) {
   }
 }
 
-async function refreshData() {
-  loading.value = true
-  errorMessage.value = null
-  deviceStatus.value = 'discovering'
-  discoveryStatus.value = 'Suche nach einem aktiven Wechselrichter im Netzwerk...'
-
-  try {
-    const response = await fetch(endpoint)
-
-    if (!response.ok) {
-      throw new Error(`Request failed with status ${response.status}`)
-    }
-
-    const payload = await response.json() as DiscoveryResponse
-    const data = payload.data ?? fallbackData
-    inverterData.value = data
-
-    const point = createHistoryPoint(data, payload.source, payload.host)
-    await persistHistoryPoint(point)
-    history.value = [...history.value.filter((entry) => entry.id !== point.id), point].slice(-60)
-
-    if (payload.source === 'fallback') {
-      deviceStatus.value = payload.status === 'offline' ? 'offline' : 'fallback'
-      discoveryStatus.value = payload.fallbackReason ?? 'Kein Wechselrichter gefunden. Fallback-Daten werden angezeigt.'
-      errorMessage.value = payload.fallbackReason ?? 'Die Live-Daten konnten nicht geladen werden. Die Beispielwerte werden angezeigt.'
-    } else {
-      deviceStatus.value = payload.status ?? 'online'
-      discoveryStatus.value = payload.host
-        ? `Live-Daten von ${payload.host} geladen.`
-        : 'Live-Daten geladen.'
-    }
-  } catch (error) {
-    inverterData.value = fallbackData
-    deviceStatus.value = 'offline'
-    discoveryStatus.value = 'Die Live-Abfrage ist fehlgeschlagen. Neue Suche nach dem Wechselrichter wird gestartet.'
-    errorMessage.value = 'Die Live-Daten konnten nicht geladen werden. Die Beispielwerte werden angezeigt.'
-    console.error(error)
-  } finally {
-    loading.value = false
+function formatAxisValue(value: number, metric: string) {
+  switch (metric) {
+    case 'temperature':
+      return `${(value / 10).toFixed(1)} °C`
+    case 'frequency':
+      return `${(value / 100).toFixed(2)} Hz`
+    case 'totalEnergy':
+    case 'dailyEnergy':
+      return `${value.toLocaleString('de-DE')} Wh`
+    case 'vpv1':
+    case 'vpv2':
+      return `${(value / 10).toFixed(1)} V`
+    case 'ipv1':
+    case 'ipv2':
+      return `${value.toFixed(1)} A`
+    default:
+      return `${value.toLocaleString('de-DE')} W`
   }
+}
+
+async function refreshData() {
+  if (refreshPromise) {
+    return refreshPromise
+  }
+
+  refreshPromise = (async () => {
+    loading.value = true
+    errorMessage.value = null
+
+    if (deviceStatus.value === 'discovering' && discoveryStatus.value === 'Warte auf Initialisierung...') {
+      deviceStatus.value = 'discovering'
+      discoveryStatus.value = 'Suche nach einem aktiven Wechselrichter im Netzwerk...'
+    }
+
+    try {
+      const response = await fetch(endpoint)
+
+      if (!response.ok) {
+        throw new Error(`Request failed with status ${response.status}`)
+      }
+
+      const payload = await response.json() as DiscoveryResponse
+      const data = payload.data ?? fallbackData
+      inverterData.value = data
+
+      const point = createHistoryPoint(data, payload.source, payload.host)
+      await persistHistoryPoint(point)
+      history.value = [...history.value.filter((entry) => entry.id !== point.id), point].slice(-60)
+
+      if (payload.source === 'fallback') {
+        deviceStatus.value = payload.status === 'offline' ? 'offline' : 'fallback'
+        discoveryStatus.value = payload.fallbackReason ?? 'Kein Wechselrichter gefunden. Fallback-Daten werden angezeigt.'
+        errorMessage.value = payload.fallbackReason ?? 'Die Live-Daten konnten nicht geladen werden. Die Beispielwerte werden angezeigt.'
+      } else {
+        deviceStatus.value = payload.status ?? 'online'
+        discoveryStatus.value = payload.host
+          ? `Live-Daten von ${payload.host} geladen.`
+          : 'Live-Daten geladen.'
+      }
+    } catch (error) {
+      inverterData.value = fallbackData
+      deviceStatus.value = 'offline'
+      discoveryStatus.value = 'Die Live-Abfrage ist fehlgeschlagen. Neue Suche nach dem Wechselrichter wird gestartet.'
+      errorMessage.value = 'Die Live-Daten konnten nicht geladen werden. Die Beispielwerte werden angezeigt.'
+      console.error(error)
+    } finally {
+      loading.value = false
+      refreshPromise = null
+    }
+  })()
+
+  return refreshPromise
+}
+
+async function refreshAllData() {
+  await refreshData()
+  await refreshMeterData()
 }
 
 function formatTimestamp(value: string) {
@@ -524,10 +641,10 @@ function formatValue(value: number, divisor: number, digits: number) {
 
 onMounted(async () => {
   await loadHistoryFromDatabase()
-  await refreshData()
+  await refreshAllData()
 
   refreshTimer = setInterval(() => {
-    void refreshData()
+    void refreshAllData()
   }, 10000)
 })
 
@@ -564,8 +681,8 @@ onBeforeUnmount(() => {
             icon="i-lucide-refresh-cw"
             color="neutral"
             variant="ghost"
-            :loading="loading"
-            @click="refreshData"
+            :loading="loading || meterLoading"
+            @click="() => { void refreshAllData() }"
           />
         </template>
       </UDashboardNavbar>
@@ -590,7 +707,8 @@ onBeforeUnmount(() => {
             <span v-if="sunMode === 'moon'" class="text-5xl">🌙</span>
             <span v-else-if="sunMode === 'low'" class="text-5xl">🌤️</span>
             <span v-else-if="sunMode === 'medium'" class="text-5xl">☀️</span>
-            <span v-else class="text-5xl">☀️☀️</span>
+            <span v-else-if="sunMode === 'high'" class="text-5xl">☀️☀️</span>
+            <span v-else class="text-5xl">☀️☀️☀️</span>
           </div>
           <p class="mt-3 text-sm font-medium text-muted">Aktuelle Leistung</p>
           <p class="mt-1 text-3xl font-semibold">{{ currentPowerValue.toLocaleString('de-DE') }} W</p>
@@ -601,6 +719,92 @@ onBeforeUnmount(() => {
           {{ errorMessage }}
         </div>
 
+        <UCard>
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p class="text-sm font-medium text-muted">
+                Zählerstände
+              </p>
+              <h3 class="mt-1 text-lg font-semibold">
+                Einspeise- und Netzleistungsdaten
+              </h3>
+            </div>
+            <UBadge :color="meterDirectionColor" variant="subtle">
+              {{ meterDirectionLabel }}
+            </UBadge>
+          </div>
+
+          <div class="mt-5 rounded-2xl border border-default/70 bg-background/70 p-5">
+            <div class="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <p class="text-sm font-medium text-muted">Aktuelle Einspeiseleistung</p>
+                <p class="mt-2 text-3xl font-semibold">{{ meterPowerLabel }}</p>
+              </div>
+              <div class="flex items-center gap-3 rounded-full border border-default/70 px-4 py-2">
+                <div class="relative flex size-10 items-center justify-center rounded-full border border-default/70 bg-background/70">
+                  <UIcon name="i-lucide-utility-pole" class="size-5" :class="meterDirection === 'import' ? 'text-error' : meterDirection === 'export' ? 'text-success' : 'text-muted'" />
+                  <UIcon :name="meterDirection === 'import' ? 'i-lucide-arrow-down-left' : meterDirection === 'export' ? 'i-lucide-arrow-up-right' : 'i-lucide-minus'" class="absolute -bottom-1 -right-1 size-4 rounded-full bg-background" :class="meterDirection === 'import' ? 'text-error' : meterDirection === 'export' ? 'text-success' : 'text-muted'" />
+                </div>
+                <div>
+                  <p class="text-sm font-medium">{{ meterDirectionLabel }}</p>
+                  <p class="text-xs text-muted">{{ meterDirection === 'import' ? 'Strom aus dem Netz' : meterDirection === 'export' ? 'Strom ins Netz' : 'Keine aktive Leistung' }}</p>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="meterError" class="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
+              {{ meterError }}
+            </div>
+
+            <div class="mt-5 grid gap-4 md:grid-cols-2">
+              <UCard>
+                <div class="flex items-center gap-2">
+                  <UIcon name="i-lucide-arrow-down-left" class="size-5 text-error" />
+                  <div>
+                    <p class="text-sm font-medium text-muted">Netzbezug</p>
+                    <p class="text-xl font-semibold">Heute</p>
+                  </div>
+                </div>
+                <p class="mt-4 text-2xl font-semibold">{{ meterImportTodayLabel }}</p>
+              </UCard>
+
+              <UCard>
+                <div class="flex items-center gap-2">
+                  <UIcon name="i-lucide-arrow-up-right" class="size-5 text-success" />
+                  <div>
+                    <p class="text-sm font-medium text-muted">Netzeinspeisung</p>
+                    <p class="text-xl font-semibold">Heute</p>
+                  </div>
+                </div>
+                <p class="mt-4 text-2xl font-semibold">{{ meterExportTodayLabel }}</p>
+              </UCard>
+            </div>
+
+            <div class="mt-4 grid gap-4 md:grid-cols-2">
+              <UCard>
+                <div class="flex items-center gap-2">
+                  <UIcon name="i-lucide-battery-charging" class="size-5 text-primary" />
+                  <div>
+                    <p class="text-sm font-medium text-muted">Gesamter Netzbezug</p>
+                    <p class="text-xl font-semibold">Gesamt</p>
+                  </div>
+                </div>
+                <p class="mt-4 text-2xl font-semibold">{{ meterImportTotalLabel }}</p>
+              </UCard>
+
+              <UCard>
+                <div class="flex items-center gap-2">
+                  <UIcon name="i-lucide-battery-full" class="size-5 text-primary" />
+                  <div>
+                    <p class="text-sm font-medium text-muted">Gesamte Netzeinspeisung</p>
+                    <p class="text-xl font-semibold">Gesamt</p>
+                  </div>
+                </div>
+                <p class="mt-4 text-2xl font-semibold">{{ meterExportTotalLabel }}</p>
+              </UCard>
+            </div>
+          </div>
+        </UCard>
 
         <UCard>
           <div class="flex flex-wrap items-center justify-between gap-3">
@@ -818,22 +1022,23 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div class="mt-5 w-full max-w-none rounded-xl border border-default/70 bg-background/60 p-4 md:p-6">
+          <div class="mt-5 w-full rounded-xl border border-default/70 bg-background/60 p-3 sm:p-4 md:p-6">
             <div class="flex items-center justify-between gap-3 text-sm text-muted">
               <span>{{ selectedParameterLabel }}</span>
               <span class="font-semibold text-foreground">{{ chartValue }}</span>
             </div>
 
-            <div class="mt-4 overflow-hidden rounded-lg border border-default/20 bg-background/40 p-2">
-              <svg viewBox="0 0 100 100" class="h-72 w-full md:h-80">
-                <line x1="0" y1="90" x2="100" y2="90" stroke="currentColor" stroke-opacity="0.2" />
-                <line x1="0" y1="70" x2="100" y2="70" stroke="currentColor" stroke-opacity="0.15" />
-                <line x1="0" y1="50" x2="100" y2="50" stroke="currentColor" stroke-opacity="0.15" />
-                <line x1="0" y1="30" x2="100" y2="30" stroke="currentColor" stroke-opacity="0.15" />
-                <line x1="0" y1="10" x2="100" y2="10" stroke="currentColor" stroke-opacity="0.15" />
-                <path :d="chartPath" fill="none" stroke="currentColor" stroke-width="2" class="text-primary" />
-                <text x="2" y="8" class="fill-muted text-[3px]">{{ chartYUnitLabel }}</text>
-                <text v-for="tick in chartXScaleLabels" :key="tick.label" :x="tick.x" y="99" text-anchor="middle" class="fill-muted text-[3px]">{{ tick.label }}</text>
+            <div class="mt-4 overflow-hidden rounded-lg border border-default/20 bg-background/40 p-1 sm:p-2 md:p-3">
+              <svg viewBox="0 0 120 100" class="h-80 w-full md:h-[24rem]">
+                <line x1="16" y1="90" x2="116" y2="90" stroke="currentColor" stroke-opacity="0.2" />
+                <line x1="16" y1="70" x2="116" y2="70" stroke="currentColor" stroke-opacity="0.15" />
+                <line x1="16" y1="50" x2="116" y2="50" stroke="currentColor" stroke-opacity="0.15" />
+                <line x1="16" y1="30" x2="116" y2="30" stroke="currentColor" stroke-opacity="0.15" />
+                <line x1="16" y1="10" x2="116" y2="10" stroke="currentColor" stroke-opacity="0.15" />
+                <path :d="chartPath" fill="none" stroke="currentColor" stroke-width="2.2" class="text-primary" />
+                <text v-for="tick in chartYTicks" :key="tick.label" x="12" :y="tick.y + 0.8" text-anchor="end" fill="currentColor" class="text-[3.8px] text-muted">{{ tick.label }}</text>
+                <text x="16" y="8" text-anchor="start" fill="currentColor" class="text-[3.8px] text-muted">{{ chartYUnitLabel }}</text>
+                <text v-for="tick in chartXScaleLabels" :key="tick.label" :x="tick.x" y="99" text-anchor="middle" fill="currentColor" class="text-[3.8px] text-muted">{{ tick.label }}</text>
               </svg>
             </div>
           </div>
