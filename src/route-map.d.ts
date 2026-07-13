@@ -52,6 +52,13 @@ declare module 'vue-router/auto-routes' {
       Record<never, never>,
       | never
     >,
+    '/meter': RouteRecordInfo<
+      '/meter',
+      '/meter',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
     '/settings': RouteRecordInfo<
       '/settings',
       '/settings',
@@ -122,6 +129,14 @@ declare module 'vue-router/auto-routes' {
     'src/pages/inbox.vue': {
       routes:
         | '/inbox'
+      views:
+        | never
+      pathParamNames:
+        | never
+    }
+    'src/pages/meter.vue': {
+      routes:
+        | '/meter'
       views:
         | never
       pathParamNames:

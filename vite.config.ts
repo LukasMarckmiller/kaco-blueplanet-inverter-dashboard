@@ -28,14 +28,14 @@ function getCandidateHosts() {
   return Array.from(hosts)
 }
 
-function requestHost(host: string, path: string) {
+function requestHost(host: string, path: string, timeoutMs = 500) {
   return new Promise<{ host: string, ok: boolean, statusCode?: number, body?: string }>((resolve) => {
     const req = httpRequest({
       hostname: host,
       port: 8484,
       path,
       method: 'GET',
-      timeout: 500,
+      timeout: timeoutMs,
       headers: {
         'Accept-Encoding': 'gzip, deflate, br',
         'User-Agent': 'okhttp/3.12.0',
@@ -67,6 +67,7 @@ function requestHost(host: string, path: string) {
 
 let cachedHost: string | null = null
 let cachedSerialNumber: string | null = null
+let cachedMeterData: { data: unknown, expiresAt: number } | null = null
 
 async function tryDiscoverFromCandidates() {
   const hostCandidates = getCandidateHosts()
@@ -101,7 +102,7 @@ async function tryDiscoverFromCandidates() {
 
       let meterData = null
       try {
-        const meterResponse = await requestHost(host, '/getdevdata.cgi?device=3')
+        const meterResponse = await requestHost(host, '/getdevdata.cgi?device=3', 250)
         if (meterResponse.ok && meterResponse.body) {
           meterData = JSON.parse(meterResponse.body)
         }
@@ -125,9 +126,27 @@ async function tryDiscoverFromCandidates() {
 }
 
 async function discoverMeterData() {
+  if (cachedMeterData && cachedMeterData.expiresAt > Date.now()) {
+    return cachedMeterData.data
+  }
+
+  if (cachedHost) {
+    const meterResponse = await requestHost(cachedHost, '/getdevdata.cgi?device=3', 750)
+    if (meterResponse.ok && meterResponse.body) {
+      try {
+        const meterData = JSON.parse(meterResponse.body)
+        cachedMeterData = { data: meterData, expiresAt: Date.now() + 15000 }
+        return meterData
+      } catch {
+        // fall through to discovery
+      }
+    }
+  }
+
   const discovered = await tryDiscoverFromCandidates()
 
   if (discovered?.meterData) {
+    cachedMeterData = { data: discovered.meterData, expiresAt: Date.now() + 15000 }
     return discovered.meterData
   }
 

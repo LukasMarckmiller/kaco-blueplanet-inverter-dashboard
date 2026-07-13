@@ -294,6 +294,14 @@ const pvItems = computed(() => {
 
 const totalPvPower = computed(() => pvItems.value.reduce((sum, item) => sum + Number(item.power.replace(' W', '')), 0))
 const currentPowerValue = computed(() => inverterData.value?.pac ?? 0)
+const householdConsumptionValue = computed(() => {
+  const inverterPower = currentPowerValue.value
+  const meterPower = meterPowerValue.value
+  return inverterPower - meterPower
+})
+const householdConsumptionLabel = computed(() => `${householdConsumptionValue.value.toLocaleString('de-DE')}`)
+const householdConsumptionColor = computed(() => householdConsumptionValue.value >= 0 ? 'text-success' : 'text-error')
+const householdConsumptionIcon = computed(() => householdConsumptionValue.value >= 0 ? '🏠' : '🏠')
 const sunMode = computed(() => {
   const power = currentPowerValue.value
 
@@ -301,15 +309,15 @@ const sunMode = computed(() => {
     return 'moon'
   }
 
-  if (power < 200) {
+  if (power < 400) {
     return 'low'
   }
 
-  if (power < 600) {
+  if (power < 800) {
     return 'medium'
   }
 
-  if (power < 1000) {
+  if (power < 1200) {
     return 'high'
   }
 
@@ -702,17 +710,28 @@ onBeforeUnmount(() => {
           </p>
         </div>
 
-        <div class="rounded-2xl border border-default/70 bg-gradient-to-br from-background to-background/80 p-5 text-center">
-          <div class="flex items-center justify-center gap-3">
-            <span v-if="sunMode === 'moon'" class="text-5xl">🌙</span>
-            <span v-else-if="sunMode === 'low'" class="text-5xl">🌤️</span>
-            <span v-else-if="sunMode === 'medium'" class="text-5xl">☀️</span>
-            <span v-else-if="sunMode === 'high'" class="text-5xl">☀️☀️</span>
-            <span v-else class="text-5xl">☀️☀️☀️</span>
+        <div class="grid gap-4 lg:grid-cols-2">
+          <div class="rounded-2xl border border-default/70 bg-gradient-to-br from-background to-background/80 p-5 text-center">
+            <div class="flex items-center justify-center gap-3">
+              <span v-if="sunMode === 'moon'" class="text-5xl">🌙</span>
+              <span v-else-if="sunMode === 'low'" class="text-5xl">🌤️</span>
+              <span v-else-if="sunMode === 'medium'" class="text-5xl">☀️</span>
+              <span v-else-if="sunMode === 'high'" class="text-5xl">☀️☀️</span>
+              <span v-else class="text-5xl">☀️☀️☀️</span>
+            </div>
+            <p class="mt-3 text-sm font-medium text-muted">Aktuelle Leistung</p>
+            <p class="mt-1 text-3xl font-semibold">{{ currentPowerValue.toLocaleString('de-DE') }} W</p>
+            <p class="mt-2 text-sm text-muted">(PV-Ausgang)</p>
           </div>
-          <p class="mt-3 text-sm font-medium text-muted">Aktuelle Leistung</p>
-          <p class="mt-1 text-3xl font-semibold">{{ currentPowerValue.toLocaleString('de-DE') }} W</p>
-          <p class="mt-2 text-sm text-muted">(PV-Ausgang)</p>
+
+          <div class="rounded-2xl border border-default/70 bg-gradient-to-br from-background to-background/80 p-5 text-center">
+            <div class="flex items-center justify-center gap-3">
+              <span class="text-5xl">🏠</span>
+            </div>
+            <p class="mt-3 text-sm font-medium text-muted">Aktueller Hausverbrauch</p>
+            <p class="mt-1 text-3xl font-semibold" :class="householdConsumptionColor">{{ householdConsumptionLabel }} W</p>
+            <p class="mt-2 text-sm text-muted">(Leistung - Einspeisung)</p>
+          </div>
         </div>
 
         <div v-if="errorMessage" class="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
